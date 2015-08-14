@@ -1,0 +1,9 @@
+task default: 'hacker_level'
+
+file 'hacker_level' => 'hacker_level.c' do
+  sh 'cc -o hacker_level hacker_level.c'
+end
+
+file 'hacker_reverser' => 'hacker_reverser.c' do
+  sh 'cc -o hacker_reverser hacker_reverser.c'
+end
